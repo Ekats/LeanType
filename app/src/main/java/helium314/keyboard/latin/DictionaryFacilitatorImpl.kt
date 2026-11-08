@@ -667,6 +667,12 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
             suggestionResults.mRawSuggestions?.addAll(it)
         }
 
+        if (composedData.mTypedWord.isEmpty() && !composedData.mIsBatchMode && suggestionResults.isEmpty()
+            && !ngramContext.isBeginningOfSentenceContext && !Settings.getValues().mNextWordStrictNgram
+        ) {
+            suggestionResults.addAll(getFallbackPredictions(currentlyPreferredDictionaryGroup))
+        }
+
         // Apply session word boost to suggestion scores (for both typing and gesture modes)
         val boost = sessionWordBoost
         if (boost != null && (composedData.mTypedWord.isNotEmpty() || composedData.mIsBatchMode)) {
@@ -788,12 +794,18 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
                     }
                 }
 
-                val dictWeight = when (dictType) {
+                val rawDictWeight = when (dictType) {
                     Dictionary.TYPE_MAIN -> mainWeight
                     Dictionary.TYPE_USER_HISTORY -> effectiveHistoryWeight
                     Dictionary.TYPE_USER -> userWeight
                     else -> 1.00f
                 }
+                // The balance weights were tuned for next-word scores (0..255 probabilities). Typed-word
+                // scores are spatial+LM distances scaled by 1e6, where the top two candidates are often
+                // only 10-20% apart, so a 0.75 vs 1.10 weight would decide the result on its own.
+                // Dampen the weights there so they only break near-ties.
+                val dictWeight = if (composedData.mTypedWord.isEmpty() && !composedData.mIsBatchMode) rawDictWeight
+                    else 1f + (rawDictWeight - 1f) * TYPING_WEIGHT_DAMPING
 
                 if (composedData.mTypedWord.isEmpty() && (dictType == Dictionary.TYPE_USER_HISTORY || dictType == Dictionary.TYPE_USER)) {
                     val baseBoost = when (balance) {
@@ -836,63 +848,72 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
                 }
             }
         }
-        if (composedData.mTypedWord.isEmpty() && suggestions.isEmpty() && !ngramContext.isBeginningOfSentenceContext) {
-            // Level 1: Primary grammatical language continuation connectors
-            val fallbackUnigrams = getLanguageFallbackUnigrams(dictGroup.locale)
-            val mainDict = dictGroup.getDict(Dictionary.TYPE_MAIN)
-            if (mainDict != null) {
-                var fallbackScore = 95
-                for (word in fallbackUnigrams) {
-                    if (suggestions.size >= 4) break
-                    if (isBlacklisted(word)) continue
-                    suggestions.add(
-                        SuggestedWordInfo(
-                            word,
-                            "",
-                            fallbackScore,
-                            SuggestedWordInfo.KIND_PREDICTION,
-                            mainDict,
-                            SuggestedWordInfo.NOT_AN_INDEX,
-                            SuggestedWordInfo.NOT_A_CONFIDENCE
-                        )
-                    )
-                    fallbackScore -= 2
-                }
-            }
+        return suggestions
+    }
 
-            // Level 2: Fill remaining slots with user history/personal frequent words
-            val neededHistorySlots = 5 - suggestions.size
-            if (neededHistorySlots > 0) {
-                val historyDict = dictGroup.getSubDict(Dictionary.TYPE_USER_HISTORY)
-                val topHistoryWords = try {
-                    historyDict?.getAllWordsWithFrequency()
-                } catch (e: Exception) {
-                    null
-                }
-                if (!topHistoryWords.isNullOrEmpty() && historyDict != null) {
-                    val existingWords = suggestions.map { it.mWord }.toSet()
-                    var historyFallbackScore = 85
-                    topHistoryWords.entries
-                        .asSequence()
-                        .filter { it.key.length > 1 && !existingWords.contains(it.key) }
-                        .sortedByDescending { it.value }
-                        .filter { !isBlacklisted(it.key) }
-                        .take(neededHistorySlots)
-                        .forEach { entry ->
-                            suggestions.add(
-                                SuggestedWordInfo(
-                                    entry.key,
-                                    "",
-                                    historyFallbackScore,
-                                    SuggestedWordInfo.KIND_PREDICTION,
-                                    historyDict,
-                                    SuggestedWordInfo.NOT_AN_INDEX,
-                                    SuggestedWordInfo.NOT_A_CONFIDENCE
-                                )
+    /**
+     * Context-free filler for when no dictionary of any language had a next-word prediction:
+     * common function words of the preferred language, then the user's most frequent words.
+     * Disabled by the "strict n-gram" setting. Runs once on the merged results (not per language),
+     * so a secondary language without data for the previous word can't inject its own function words.
+     */
+    private fun getFallbackPredictions(dictGroup: DictionaryGroup): List<SuggestedWordInfo> {
+        val suggestions = ArrayList<SuggestedWordInfo>()
+        // Level 1: Primary grammatical language continuation connectors
+        val fallbackUnigrams = getLanguageFallbackUnigrams(dictGroup.locale)
+        val mainDict = dictGroup.getDict(Dictionary.TYPE_MAIN)
+        if (mainDict != null) {
+            var fallbackScore = 95
+            for (word in fallbackUnigrams) {
+                if (suggestions.size >= 4) break
+                if (isBlacklisted(word)) continue
+                suggestions.add(
+                    SuggestedWordInfo(
+                        word,
+                        "",
+                        fallbackScore,
+                        SuggestedWordInfo.KIND_PREDICTION,
+                        mainDict,
+                        SuggestedWordInfo.NOT_AN_INDEX,
+                        SuggestedWordInfo.NOT_A_CONFIDENCE
+                    )
+                )
+                fallbackScore -= 2
+            }
+        }
+
+        // Level 2: Fill remaining slots with user history/personal frequent words
+        val neededHistorySlots = 5 - suggestions.size
+        if (neededHistorySlots > 0) {
+            val historyDict = dictGroup.getSubDict(Dictionary.TYPE_USER_HISTORY)
+            val topHistoryWords = try {
+                historyDict?.getAllWordsWithFrequency()
+            } catch (e: Exception) {
+                null
+            }
+            if (!topHistoryWords.isNullOrEmpty() && historyDict != null) {
+                val existingWords = suggestions.map { it.mWord }.toSet()
+                var historyFallbackScore = 85
+                topHistoryWords.entries
+                    .asSequence()
+                    .filter { it.key.length > 1 && !existingWords.contains(it.key) }
+                    .sortedByDescending { it.value }
+                    .filter { !isBlacklisted(it.key) }
+                    .take(neededHistorySlots)
+                    .forEach { entry ->
+                        suggestions.add(
+                            SuggestedWordInfo(
+                                entry.key,
+                                "",
+                                historyFallbackScore,
+                                SuggestedWordInfo.KIND_PREDICTION,
+                                historyDict,
+                                SuggestedWordInfo.NOT_AN_INDEX,
+                                SuggestedWordInfo.NOT_A_CONFIDENCE
                             )
-                            historyFallbackScore -= 2
-                        }
-                }
+                        )
+                        historyFallbackScore -= 2
+                    }
             }
         }
         return suggestions
@@ -936,8 +957,10 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
                     continue
                 }
             }
+            // This is only called for typed/gesture input, whose native scores are ~1e5..2e6 (not 0..255),
+            // so the boost has to be converted into that score space or it is a no-op (+32 on ~500000).
             val rawBoost = boost.getBoost(word) * sessionMultiplier * BOOST_SCORE_MULTIPLIER
-            val boostAmount = rawBoost.coerceAtMost(MAX_PERSONALIZATION_BOOST.toFloat())
+            val boostAmount = rawBoost.coerceAtMost(MAX_PERSONALIZATION_BOOST.toFloat()) * TYPING_SCORE_SPACE_SCALE
             if (boostAmount > 0f) {
                 toRemove.add(info)
                 boosted.add(SuggestedWordInfo(
@@ -1036,6 +1059,16 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
         // We cap personalization boost to ~20% of the native ceiling so it supports, rather than overrides,
         // high-confidence dictionary bigrams.
         private const val MAX_PERSONALIZATION_BOOST = 32
+
+        // Typed-word and gesture suggestion scores come from native code as (base - distance) * 1e6,
+        // e.g. "teh" -> the 477893, ten 400787. Next-word predictions are raw probabilities (0..255).
+        // A boost expressed in prediction units is multiplied by this to act in typing score space:
+        // the cap of 32 becomes 32000, i.e. a few percent of a typical top score, so frequently used
+        // words win near-ties without overriding clearly better matches.
+        private const val TYPING_SCORE_SPACE_SCALE = 1000f
+
+        // Fraction of the suggestion-balance weight deviation that is applied to typed-word scores.
+        private const val TYPING_WEIGHT_DAMPING = 0.2f
 
         // Threshold delta for beam pruning next-word candidates below top candidate score.
         private const val BEAM_DELTA = 60

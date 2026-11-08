@@ -336,6 +336,12 @@ class Settings private constructor() : SharedPreferences.OnSharedPreferenceChang
         const val AUTO_CORRECT_LEVEL_BALANCED = 2
         const val AUTO_CORRECT_LEVEL_AGGRESSIVE = 3
         const val AUTO_CORRECT_LEVEL_VERY_AGGRESSIVE = 4
+        // Normalized-score thresholds for the presets. "Balanced" used to be 0.067, which is AOSP's
+        // old "aggressive" value and well below upstream HeliBoard's default (~0.188); at 0.067 most
+        // out-of-dictionary names/slang get replaced (gboard->aboard, covid->civic, rizz->fizz).
+        const val AUTO_CORRECT_THRESHOLD_MODEST = 0.25f
+        const val AUTO_CORRECT_THRESHOLD_BALANCED = 0.185f
+        const val AUTO_CORRECT_THRESHOLD_AGGRESSIVE = 0.067f
         const val PREF_EXPAND_FINE_TUNE_AUTOCORRECT = "expand_fine_tune_autocorrect"
         const val PREF_EXPAND_FINE_TUNE_PREDICTION = "expand_fine_tune_prediction"
         const val PREF_EXPAND_FINE_TUNE_THEME = "expand_fine_tune_theme"
@@ -961,21 +967,25 @@ class Settings private constructor() : SharedPreferences.OnSharedPreferenceChang
             }
             val threshold = prefs.getFloat(PREF_AUTO_CORRECT_THRESHOLD, Defaults.PREF_AUTO_CORRECT_THRESHOLD)
             val more = prefs.getBoolean(PREF_MORE_AUTO_CORRECTION, Defaults.PREF_MORE_AUTO_CORRECTION)
-            return when {
-                threshold < 0f -> AUTO_CORRECT_LEVEL_VERY_AGGRESSIVE
-                more -> AUTO_CORRECT_LEVEL_AGGRESSIVE
-                threshold >= 0.18f -> AUTO_CORRECT_LEVEL_MODEST
-                else -> AUTO_CORRECT_LEVEL_BALANCED
-            }
+            return classifyAutoCorrectLevel(threshold, more)
+        }
+
+        /** Maps a stored threshold + "more autocorrect" flag back to the closest aggressiveness preset. */
+        @JvmStatic
+        fun classifyAutoCorrectLevel(threshold: Float, moreAutocorrect: Boolean): Int = when {
+            threshold < 0f -> AUTO_CORRECT_LEVEL_VERY_AGGRESSIVE
+            moreAutocorrect -> AUTO_CORRECT_LEVEL_AGGRESSIVE
+            threshold >= (AUTO_CORRECT_THRESHOLD_MODEST + AUTO_CORRECT_THRESHOLD_BALANCED) / 2 -> AUTO_CORRECT_LEVEL_MODEST
+            else -> AUTO_CORRECT_LEVEL_BALANCED
         }
 
         @JvmStatic
         fun applyAutoCorrectAggressivenessPreset(prefs: SharedPreferences, level: Int) {
             val (threshold, moreAutocorrect) = when (level) {
-                AUTO_CORRECT_LEVEL_MODEST -> Pair(0.185f, false)
-                AUTO_CORRECT_LEVEL_AGGRESSIVE -> Pair(0.067f, true)
+                AUTO_CORRECT_LEVEL_MODEST -> Pair(AUTO_CORRECT_THRESHOLD_MODEST, false)
+                AUTO_CORRECT_LEVEL_AGGRESSIVE -> Pair(AUTO_CORRECT_THRESHOLD_AGGRESSIVE, true)
                 AUTO_CORRECT_LEVEL_VERY_AGGRESSIVE -> Pair(-1f, true)
-                else -> Pair(0.067f, false) // AUTO_CORRECT_LEVEL_BALANCED
+                else -> Pair(AUTO_CORRECT_THRESHOLD_BALANCED, false) // AUTO_CORRECT_LEVEL_BALANCED
             }
             prefs.edit()
                 .putInt(PREF_AUTO_CORRECT_AGGRESSIVENESS, level)

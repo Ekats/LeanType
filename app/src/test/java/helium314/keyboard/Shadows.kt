@@ -84,6 +84,10 @@ class ShadowBinaryDictionaryUtils {
                             dp[i - 1][j] + 1,
                             dp[i][j - 1] + 1
                         )
+                        // transposition counts as one edit, like the native DamerauLevenshteinEditDistancePolicy
+                        // (otherwise "teh" -> "the" would score half of what it scores on device)
+                        if (i > 1 && j > 1 && x[i - 1].equals(y[j - 2], true) && x[i - 2].equals(y[j - 1], true))
+                            dp[i][j] = min(dp[i][j], dp[i - 2][j - 2] + 1)
                     }
                 }
             }
@@ -99,7 +103,7 @@ class ShadowBinaryDictionaryUtils {
         }
 
         private fun costOfSubstitution(a: Char, b: Char): Int {
-            return if (a == b) 0 else 1
+            return if (a.equals(b, ignoreCase = true)) 0 else 1 // native compares base lower case
         }
     }
 }

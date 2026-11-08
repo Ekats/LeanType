@@ -157,12 +157,7 @@ fun createCorrectionSettings(context: Context) = listOf(
             default = Defaults.PREF_MORE_AUTO_CORRECTION,
             onCheckedChange = { more ->
                 val threshold = prefs.getFloat(Settings.PREF_AUTO_CORRECT_THRESHOLD, Defaults.PREF_AUTO_CORRECT_THRESHOLD)
-                val level = when {
-                    threshold < 0f -> Settings.AUTO_CORRECT_LEVEL_VERY_AGGRESSIVE
-                    more -> Settings.AUTO_CORRECT_LEVEL_AGGRESSIVE
-                    threshold >= 0.18f -> Settings.AUTO_CORRECT_LEVEL_MODEST
-                    else -> Settings.AUTO_CORRECT_LEVEL_BALANCED
-                }
+                val level = Settings.classifyAutoCorrectLevel(threshold, more)
                 prefs.edit { putInt(Settings.PREF_AUTO_CORRECT_AGGRESSIVENESS, level) }
             }
         )
@@ -174,8 +169,9 @@ fun createCorrectionSettings(context: Context) = listOf(
     },
     Setting(context, Settings.PREF_AUTO_CORRECT_THRESHOLD, R.string.auto_correction_confidence) { setting ->
         val items = listOf(
-            stringResource(R.string.auto_correction_threshold_mode_modest) to 0.185f,
-            stringResource(R.string.auto_correction_threshold_mode_aggressive) to 0.067f,
+            stringResource(R.string.auto_correction_threshold_mode_modest) to Settings.AUTO_CORRECT_THRESHOLD_MODEST,
+            stringResource(R.string.auto_correct_aggressiveness_2) to Settings.AUTO_CORRECT_THRESHOLD_BALANCED,
+            stringResource(R.string.auto_correction_threshold_mode_aggressive) to Settings.AUTO_CORRECT_THRESHOLD_AGGRESSIVE,
             stringResource(R.string.auto_correction_threshold_mode_very_aggressive) to -1f,
         )
         val prefs = LocalContext.current.prefs()
@@ -185,12 +181,7 @@ fun createCorrectionSettings(context: Context) = listOf(
             default = Defaults.PREF_AUTO_CORRECT_THRESHOLD,
             onChanged = { threshold ->
                 val more = prefs.getBoolean(Settings.PREF_MORE_AUTO_CORRECTION, Defaults.PREF_MORE_AUTO_CORRECTION)
-                val level = when {
-                    threshold < 0f -> Settings.AUTO_CORRECT_LEVEL_VERY_AGGRESSIVE
-                    more -> Settings.AUTO_CORRECT_LEVEL_AGGRESSIVE
-                    threshold >= 0.18f -> Settings.AUTO_CORRECT_LEVEL_MODEST
-                    else -> Settings.AUTO_CORRECT_LEVEL_BALANCED
-                }
+                val level = Settings.classifyAutoCorrectLevel(threshold, more)
                 prefs.edit { putInt(Settings.PREF_AUTO_CORRECT_AGGRESSIVENESS, level) }
             }
         )

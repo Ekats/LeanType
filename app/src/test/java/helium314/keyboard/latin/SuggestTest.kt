@@ -273,13 +273,12 @@ class SuggestTest {
         assertEquals("word'", result.mWord)
     }
 
-    @Test fun `misspelled word is corrected using relaxed threshold even with low score`() {
+    @Test fun `out-of-dictionary word below threshold is not corrected`() {
         val locale = Locale.ENGLISH
         // typed word: "recpa" (length 5) -> not in dictionary
-        // suggestion: "recep" (score 300,000)
-        // edit distance is 2, normalizedScore is 0.3 * (1 - 2/5) = 0.18
-        // 0.18 < 0.185 (threshold), but adjustedThreshold is 0.185 * (3/5) = 0.111
-        // Since score 300,000 > scoreLimit / 4 (237,500) and length > 3, it should correct!
+        // suggestion: "recep" (score 300,000), edit distance 2 -> normalizedScore 0.3 * (1 - 2/5) = 0.18 < 0.185
+        // Out-of-dictionary words below the threshold are typically names, brands or slang
+        // (measured: gboard->aboard 0.173, covid->civic 0.152), so no relaxed threshold is applied.
         val result = shouldBeAutoCorrected(
             "recpa",
             listOf(suggestion("recep", 300000, locale)),
@@ -288,7 +287,64 @@ class SuggestTest {
             locale,
             thresholdModest
         )
+        assert(!result.last()) // should not be corrected
+    }
+
+    @Test fun `long misspelling is corrected at modest threshold without relaxation`() {
+        val locale = Locale.ENGLISH
+        // native score measured for "definately" on en_US main dictionary: definitely 340741 -> normalized 0.307
+        val result = shouldBeAutoCorrected(
+            "definately",
+            listOf(suggestion("definitely", 340741, locale), suggestion("defiantly", 3782, locale)),
+            null,
+            null,
+            locale,
+            thresholdModest
+        )
         assert(result.last()) // should be corrected
+    }
+
+    @Test fun `common short transposition typo is corrected`() {
+        val locale = Locale.ENGLISH
+        // native scores measured for "teh" on en_US main dictionary: the 477893, ten 400787
+        // normalized 0.319 (transposition = 1 edit) and the runner-up is clearly behind
+        val result = shouldBeAutoCorrected(
+            "teh",
+            listOf(suggestion("the", 477893, locale), suggestion("ten", 400787, locale)),
+            null,
+            null,
+            locale,
+            thresholdModest
+        )
+        assert(result.last()) // should be corrected
+    }
+
+    @Test fun `short abbreviation is not corrected even when aggressive`() {
+        val locale = Locale.ENGLISH
+        // native scores measured for "tg": to 272978 (normalized 0.136), the 245722
+        val result = shouldBeAutoCorrected(
+            "tg",
+            listOf(suggestion("to", 272978, locale), suggestion("the", 245722, locale)),
+            null,
+            null,
+            locale,
+            thresholdAggressive
+        )
+        assert(!result.last()) // should not be corrected
+    }
+
+    @Test fun `short typo with close runner-up is not corrected`() {
+        val locale = Locale.ENGLISH
+        // strong match, but "fo" could just as well be "of": too close to call
+        val result = shouldBeAutoCorrected(
+            "fo",
+            listOf(suggestion("to", 586434, locale), suggestion("of", 570000, locale)),
+            null,
+            null,
+            locale,
+            thresholdAggressive
+        )
+        assert(!result.last()) // should not be corrected
     }
 
 

@@ -649,6 +649,19 @@ object AppUpgrade {
                 prefs.edit { remove(Settings.PREF_POPUP_KEYS_ORDER) }
             }
         }
+        if (oldVersion <= 4320) {
+            // "Balanced" autocorrect used to store AOSP's aggressive threshold (0.067). Move users who are on
+            // the Balanced preset (explicitly, or implicitly via the old value) to the new Balanced threshold.
+            val storedLevel = if (prefs.contains(Settings.PREF_AUTO_CORRECT_AGGRESSIVENESS))
+                prefs.getInt(Settings.PREF_AUTO_CORRECT_AGGRESSIVENESS, Defaults.PREF_AUTO_CORRECT_AGGRESSIVENESS) else null
+            val more = prefs.getBoolean(Settings.PREF_MORE_AUTO_CORRECTION, Defaults.PREF_MORE_AUTO_CORRECTION)
+            val threshold = prefs.getFloat(Settings.PREF_AUTO_CORRECT_THRESHOLD, Settings.AUTO_CORRECT_THRESHOLD_AGGRESSIVE)
+            val isOldBalanced = storedLevel == Settings.AUTO_CORRECT_LEVEL_BALANCED
+                || (storedLevel == null && !more && threshold == Settings.AUTO_CORRECT_THRESHOLD_AGGRESSIVE)
+            if (isOldBalanced && prefs.contains(Settings.PREF_AUTO_CORRECT_THRESHOLD)) {
+                prefs.edit { putFloat(Settings.PREF_AUTO_CORRECT_THRESHOLD, Settings.AUTO_CORRECT_THRESHOLD_BALANCED) }
+            }
+        }
         upgradeToolbarPrefs(prefs)
         LayoutUtilsCustom.onLayoutFileChanged() // just to be sure
         prefs.edit { putInt(Settings.PREF_VERSION_CODE, BuildConfig.VERSION_CODE) }

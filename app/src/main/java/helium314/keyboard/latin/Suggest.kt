@@ -292,14 +292,19 @@ class Suggest(private val mDictionaryFacilitator: DictionaryFacilitator) {
                 }
             }
 
-            // For short words (<= 3 chars) not in the dictionary (e.g. Ab, yt, tg, db),
-            // prevent single-letter substitution by common dictionary unigrams unless it's a known user history word or contraction.
+            // For short words (<= 3 chars) not in the dictionary, only autocorrect when the correction is
+            // both a strong match and clearly ahead of the runner-up.
+            // A blanket block here used to stop the most common typos of all ("teh", "hte", "adn", "thw",
+            // "fo", "ot") from ever being corrected. Measured against the en_US main dictionary, real
+            // transposition/neighbour-key typos score ~0.29-0.43 normalized, while abbreviations and
+            // slang (tg, brb, idk, omg, lol, thx) score ~0.08-0.23 and/or have a close runner-up.
             if (typedWordInfo == null && consideredWord.length <= 3) {
                 val isExactOrCaseMatch = firstSuggestion.mWord.equals(consideredWord, ignoreCase = true)
                 val isUserHistory = firstSuggestion.mSourceDict?.mDictType == Dictionary.TYPE_USER_HISTORY
                 val isWhitelist = firstSuggestion.isKindOf(SuggestedWordInfo.KIND_WHITELIST)
                 val isShortcut = firstSuggestion.isKindOf(SuggestedWordInfo.KIND_SHORTCUT) && Settings.getValues().mAutoCorrectShortcuts
-                if (!isExactOrCaseMatch && !isUserHistory && !isWhitelist && !isShortcut && expectedContraction == null) {
+                if (!isExactOrCaseMatch && !isUserHistory && !isWhitelist && !isShortcut && expectedContraction == null
+                    && !isConfidentShortWordCorrection(consideredWord, firstSuggestion, suggestionResults)) {
                     return true to false
                 }
             }
@@ -324,13 +329,16 @@ class Suggest(private val mDictionaryFacilitator: DictionaryFacilitator) {
             }
 
             if (!AutoCorrectionUtils.suggestionExceedsThreshold(firstSuggestion, consideredWord, mAutoCorrectionThreshold)) {
-                // Score is too low for autocorrect — but for long words, the normalized score
-                // formula penalizes proportionally (weight = 1 - editDist/len), so a single typo
-                // in a 12-char word gets unfairly suppressed. Use a relaxed threshold for long words.
-                // ponytail: relax limits for misspelled words (not in dictionary) to match Gboard-like behaviour
+                // Score is too low for autocorrect.
+                // Out-of-dictionary words are NOT given a relaxed threshold: measured on the en_US
+                // dictionary, single-typo misspellings of long words already score 0.31-0.59 normalized
+                // (becuase, definately, enviroment, ...), far above any preset threshold. The words that
+                // fall below the threshold are mostly names, brands, slang and other-language words
+                // (gboard, covid, rizz, Obtainium, ...), which is exactly what must not be "corrected".
                 val isTypedWordInDict = typedWordInfo != null
-                val minScore = if (isTypedWordInDict) (scoreLimit / 2) else (scoreLimit / 4)
-                val minLength = if (isTypedWordInDict) 6 else 3
+                if (!isTypedWordInDict) return true to false
+                val minScore = scoreLimit / 2
+                val minLength = 6
                 if (consideredWord.length > minLength && firstSuggestion.mScore > minScore) {
                     val normalizedScore = BinaryDictionaryUtils.calcNormalizedScore(
                         consideredWord, firstSuggestion.mWord, firstSuggestion.mScore)
@@ -392,6 +400,24 @@ class Suggest(private val mDictionaryFacilitator: DictionaryFacilitator) {
             }
         }
         return allowsToBeAutoCorrected to hasAutoCorrection
+    }
+
+    /**
+     * Whether a correction for a short (<= 3 chars) out-of-dictionary word is safe to apply automatically:
+     * the normalized score must clear a stricter floor than the general threshold, and the suggestion must
+     * be clearly ahead of the next distinct candidate (e.g. "si" -> "so" vs "is" is too close to call).
+     */
+    private fun isConfidentShortWordCorrection(
+        consideredWord: String,
+        firstSuggestion: SuggestedWordInfo,
+        suggestionResults: SuggestionResults
+    ): Boolean {
+        val normalizedScore = BinaryDictionaryUtils.calcNormalizedScore(consideredWord, firstSuggestion.mWord, firstSuggestion.mScore)
+        if (normalizedScore < maxOf(mAutoCorrectionThreshold, SHORT_WORD_MIN_NORMALIZED_SCORE)) return false
+        val runnerUp = suggestionResults.firstOrNull {
+            !it.mWord.equals(firstSuggestion.mWord, ignoreCase = true) && !it.mWord.equals(consideredWord, ignoreCase = true)
+        } ?: return true
+        return firstSuggestion.mScore >= runnerUp.mScore * SHORT_WORD_MIN_MARGIN
     }
 
     /**
@@ -575,6 +601,11 @@ class Suggest(private val mDictionaryFacilitator: DictionaryFacilitator) {
     companion object {
         private val TAG: String = Suggest::class.java.simpleName
         private const val SCORE_LIMIT_CACHE_UPDATE_INTERVAL_MS = 100L
+
+        // Short-word autocorrect gate, see isConfidentShortWordCorrection. Values chosen from measured
+        // native scores: real typos land at 0.29-0.43, abbreviations/slang at 0.08-0.23.
+        private const val SHORT_WORD_MIN_NORMALIZED_SCORE = 0.25f
+        private const val SHORT_WORD_MIN_MARGIN = 1.1f
 
         // Session id for {@link #getSuggestedWords(WordComposer,String,ProximityInfo,boolean,int)}.
         // We are sharing the same ID between typing and gesture to save RAM footprint.
