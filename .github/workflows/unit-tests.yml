@@ -39,7 +39,9 @@ jobs:
                       out = r.find("system-out")
                       print(f"::group::output of {tc.get('name')}", file=sys.stderr)
                       print((bad.text or "")[:3000], file=sys.stderr)
-                      print((out.text or "")[-6000:] if out is not None else "", file=sys.stderr)
+                      for l in (out.text or "").splitlines() if out is not None else []:
+                          if not l.startswith(("W/", "I/startup", "I/LatinIME", "D/InputAttributes", "I/Settings", "I/Dictionary")):
+                              print(l, file=sys.stderr)
                       print("::endgroup::", file=sys.stderr)
           print(f"**{tot - fail}/{tot} tests passed**\n"); print("\n".join(lines))
           PY
