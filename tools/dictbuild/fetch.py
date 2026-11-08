@@ -134,6 +134,55 @@ def prose_lines(text, min_words=4):
         yield line
 
 
+class HttpRangeFile(io.RawIOBase):
+    """Seekable read-only file over HTTP range requests (enough for pyarrow's parquet reader)."""
+
+    def __init__(self, url, block=8 << 20):
+        self.url, self.block, self.pos = url, block, 0
+        with http_open(url, headers={"Range": "bytes=0-0"}) as r:
+            rng = r.headers.get("Content-Range", "")
+            self.size = int(rng.rsplit("/", 1)[-1]) if "/" in rng else int(r.headers["Content-Length"])
+            self.url = r.geturl()  # follow the redirect to the CDN once
+        self.cache_start, self.cache = -1, b""
+
+    def seekable(self):
+        return True
+
+    def readable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        self.pos = offset if whence == 0 else (self.pos + offset if whence == 1 else self.size + offset)
+        return self.pos
+
+    def _fetch(self, start, end):
+        with http_open(self.url, headers={"Range": f"bytes={start}-{end - 1}"}) as r:
+            return r.read()
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self.size - self.pos
+        n = min(n, self.size - self.pos)
+        if n <= 0:
+            return b""
+        cs = self.cache_start
+        if not (cs >= 0 and cs <= self.pos and self.pos + n <= cs + len(self.cache)):
+            end = min(self.size, self.pos + max(n, self.block))
+            self.cache_start, self.cache = self.pos, self._fetch(self.pos, end)
+            cs = self.cache_start
+        out = self.cache[self.pos - cs:self.pos - cs + n]
+        self.pos += len(out)
+        return out
+
+    def readinto(self, b):
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
+
+
 # ------------------------------------------------------------------ OpenSubtitles (OPUS)
 
 def fetch_opus(src, lang_code, w):
@@ -204,24 +253,17 @@ def fetch_hf_parquet(src, w):
         if w.full:
             break
         url = f"https://huggingface.co/datasets/{repo}/resolve/main/{fpath}"
-        local = os.path.join(w.dir, "_tmp.parquet")
         log(f"[hf] {url}")
-        with http_open(url) as r, open(local, "wb") as out:
-            while True:
-                b = r.read(1 << 22)
-                if not b:
-                    break
-                out.write(b)
         meta["files"].append(fpath)
         start = w.tokens
-        pf = pq.ParquetFile(local)
+        # read only the row groups we need via HTTP range requests instead of downloading GB-sized shards
+        pf = pq.ParquetFile(HttpRangeFile(url))
         for rg in range(pf.num_row_groups):
             if w.full or w.tokens - start >= per_file_budget:
                 break
             for text in pf.read_row_group(rg, columns=["text"]).column("text").to_pylist():
                 for line in prose_lines(text or ""):
                     w.write(line)
-        os.remove(local)
     w.close(meta)
 
 
