@@ -358,6 +358,9 @@ class SuggestTest {
         latinIME.prefs().edit { putFloat(Settings.PREF_AUTO_CORRECT_THRESHOLD, autoCorrectThreshold) }
         // enable "more autocorrect" so we actually have autocorrect even though we don't set a compatible input type
         latinIME.prefs().edit { putBoolean(Settings.PREF_MORE_AUTO_CORRECTION, true) }
+        // LatinIME only pushes the threshold into Suggest lazily (on the next input start), so without this
+        // whichever test runs first in a JVM still sees autocorrect "off" (threshold Float.MAX_VALUE)
+        suggest.setAutoCorrectionThreshold(Settings.getValues().mAutoCorrectionThreshold)
         currentTypingLocale = typingLocale
         val suggestionsContainer = ArrayList<SuggestedWordInfo>().apply { addAll(suggestions) }
         val suggestionResults = SuggestionResults(suggestions.size, false, false)
