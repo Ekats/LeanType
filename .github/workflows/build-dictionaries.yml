@@ -1,0 +1,167 @@
+name: Build dictionaries
+
+# Builds main dictionaries with next-word data from current corpora and publishes them as release
+# assets, which the app's dictionary list downloads from (see dictionaries_in_dict_repo.csv).
+on:
+  workflow_dispatch:
+    inputs:
+      languages:
+        description: "Comma-separated configs from tools/dictbuild/lang (without .json)"
+        default: "en_US,et"
+      release_tag:
+        description: "Release to create/update with the dictionaries"
+        default: "dicts-2026.11"
+      scale:
+        description: "Token budget multiplier (use 0.02 for a quick test run)"
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: ${{ fromJSON(format('["{0}"]', replace(replace(inputs.languages, ' ', ''), ',', '","'))) }}
+    env:
+      WORK: ${{ github.workspace }}/work
+      CFG: tools/dictbuild/lang/${{ matrix.lang }}.json
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      JOBS: 4
+      LC_ALL: C.UTF-8
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" || true
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq hunspell clang
+          pip install numpy pyarrow
+          mkdir -p "$WORK/hunspell"
+          LO=https://raw.githubusercontent.com/LibreOffice/dictionaries/master/en
+          for d in en_US en_GB; do curl -fsSL -o "$WORK/hunspell/$d.dic" $LO/$d.dic; curl -fsSL -o "$WORK/hunspell/$d.aff" $LO/$d.aff; done
+          W=https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/et
+          curl -fsSL -o "$WORK/hunspell/et_EE.dic" $W/index.dic; curl -fsSL -o "$WORK/hunspell/et_EE.aff" $W/index.aff
+          curl -fsSL -o dicttool_aosp.jar https://raw.githubusercontent.com/remi0s/aosp-dictionary-tools/master/dicttool_aosp.jar
+
+      - name: Scale token budgets
+        if: inputs.scale != '1'
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          p = os.environ["CFG"]; c = json.load(open(p)); s = float("${{ inputs.scale }}")
+          for src in c["sources"]:
+              src["max_tokens"] = max(200000, int(src["max_tokens"] * s))
+              if "max_files" in src: src["max_files"] = max(1, int(src["max_files"] * s))
+          json.dump(c, open(p, "w"), indent=1)
+          EOF
+
+      - name: Fetch corpora
+        run: |
+          for src in $(python3 -c "import json;print(' '.join(s['name'] for s in json.load(open('$CFG'))['sources']))"); do
+            echo "::group::$src"
+            if ! python3 tools/dictbuild/fetch.py "$CFG" "$WORK" "$src"; then
+              echo "::warning::source $src failed to download; dictionary is built without it"
+              rm -rf "$WORK/text/$src"
+            fi
+            echo "::endgroup::"
+            df -h / | tail -1
+          done
+
+      - name: Count words and pairs
+        run: |
+          python3 tools/dictbuild/dictbuild.py count "$CFG" "$WORK"
+          python3 tools/dictbuild/dictbuild.py vocab "$CFG" "$WORK"
+          python3 tools/dictbuild/dictbuild.py bigrams "$CFG" "$WORK"
+          rm -rf "$WORK/text"/*/*.txt.gz
+
+      - name: Write dictionary
+        run: |
+          NAME=$(python3 -c "import json;print(json.load(open('$CFG'))['file_name'])")
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          mkdir -p out
+          python3 tools/dictbuild/dictbuild.py emit "$CFG" "$WORK" "out/${NAME%.dict}.combined"
+          java -jar dicttool_aosp.jar makedict -s "out/${NAME%.dict}.combined" -d "out/$NAME"
+          gzip -9 "out/${NAME%.dict}.combined"
+          ls -la out
+
+      - name: Validate with the app's native engine
+        run: |
+          tools/dictbuild/probe/build.sh > /dev/null
+          P=tools/dictbuild/probe/out
+          LOCALE=$(python3 -c "import json;print(json.load(open('$CFG'))['header']['locale'])")
+          ARGS=$(python3 -c "
+          import json, shlex
+          p = json.load(open('$CFG'))['probe']
+          print(' '.join(shlex.quote(f'{k}={v}') for k, v in p['predict'].items()) + ' ' + ' '.join(shlex.quote(f'{k}:={v}') for k, v in p['correct'].items()))")
+          {
+            echo "## ${{ matrix.lang }}"
+            echo '```'
+            eval java -Dstdout.encoding=UTF-8 -Dlatinime.lib=$P/libjni_latinime.so -cp $P Probe "out/$NAME" "$LOCALE" check $ARGS
+            echo '```'
+          } | tee "out/${NAME%.dict}.report.md"
+          python3 - <<'EOF' >> "out/${NAME%.dict}.report.md"
+          import json, glob, os
+          print("\nSources:\n")
+          for f in sorted(glob.glob(os.environ["WORK"] + "/text/*/SOURCE.json")):
+              m = json.load(open(f)); n = f.split("/")[-2]
+              detail = m.get("url") or m.get("crawl") or m.get("dataset")
+              extra = m.get("version") or m.get("last_modified") or (", ".join(m.get("files", [])[:3]) if isinstance(m.get("files"), list) else m.get("files"))
+              print(f"- **{n}**: {m['tokens']:,} tokens — {detail} ({extra})")
+          EOF
+          cat "out/${NAME%.dict}.report.md" >> "$GITHUB_STEP_SUMMARY"
+          grep -q "all checks passed" "out/${NAME%.dict}.report.md"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dict-${{ matrix.lang }}
+          path: out/
+
+  release:
+    needs: build
+    if: always() && contains(needs.build.result, 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+          pattern: dict-*
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          ls -la dl
+          {
+            echo "Main dictionaries with next-word prediction, built by the *Build dictionaries* workflow."
+            echo "Install from LeanType: Settings → Dictionaries → language → the **2026** entry."
+            echo
+            cat dl/*.report.md
+            echo
+            echo "Corpus licences/attribution: OpenSubtitles (opensubtitles.org via OPUS), Common Crawl (Terms of Use), FineWeb/FineWeb-2 (ODC-By), Wikipedia (CC BY-SA). Only word and word-pair frequencies are distributed."
+          } > notes.md
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "Dictionaries $TAG" --notes-file notes.md --prerelease
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dl/*.dict dl/*.combined.gz

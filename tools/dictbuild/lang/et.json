@@ -1,0 +1,22 @@
+{
+  "header": {"id": "et", "locale": "et",
+             "description": "Eesti 2026 - LeanType: OpenSubtitles 2024 + Vikipeedia 2026 + Common Crawl 2026 + FineWeb-2"},
+  "file_name": "main_et__2026.dict",
+  "opus_lang": "et",
+  "hunspell": ["et_EE"],
+  "sources": [
+    {"name": "opensubtitles", "type": "opus", "share": 0.30, "max_tokens": 150000000},
+    {"name": "fineweb2", "type": "hf_parquet", "share": 0.30, "max_tokens": 250000000,
+     "dataset": "HuggingFaceFW/fineweb-2", "path": "data/est_Latn/train", "max_files": 3},
+    {"name": "wikipedia", "type": "wikipedia", "share": 0.25, "max_tokens": 120000000, "wiki": "etwiki"},
+    {"name": "commoncrawl", "type": "ccwet", "share": 0.15, "max_tokens": 40000000,
+     "cc_languages": ["est"], "prefer_tlds": [".ee"], "max_files": 200}
+  ],
+  "vocab": {"max_words": 600000, "min_probability": 1e-8,
+            "unknown_word_min_probability": 1e-7, "unknown_word_min_sources": 2},
+  "bigrams": {"min_count": 4, "min_conditional_probability": 0.002, "max_per_word": 24, "min_per_word": 4},
+  "probe": {
+    "predict": {"aitäh": "teile|sulle|väga|kõigile", "ma": "ei|olen|arvan|tean|pole", "head": "aega|ööd|päeva|uut", "kas": "sa|te|on|ma"},
+    "correct": {}
+  }
+}

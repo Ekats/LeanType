@@ -138,8 +138,20 @@ def update_dict_list():
 
         dicts.append(f"{dict_type},{locale},{kind},{rel_path}\n")
     target_file = "app/src/main/assets/dictionaries_in_dict_repo.csv"
+    # keep entries hosted outside the dictionaries repo (full https URLs, e.g. LeanType's own
+    # release assets built by .github/workflows/build-dictionaries.yml), listed first for their locale
+    own = []
+    if os.path.exists(target_file):
+        with open(target_file) as f:
+            own = [l if l.endswith("\n") else l + "\n" for l in f if l.split(",", 3)[-1].startswith("https://")]
+    merged = []
+    for line in dicts:
+        prefix = ",".join(line.split(",")[:2]) + ","
+        merged += [o for o in own if o.startswith(prefix) and o not in merged]
+        merged.append(line)
+    merged += [o for o in own if o not in merged]
     with open(target_file, 'w') as f:
-        f.writelines(dicts)
+        f.writelines(merged)
 
 
 # check whether there is a changelog file for current version and print result and version code

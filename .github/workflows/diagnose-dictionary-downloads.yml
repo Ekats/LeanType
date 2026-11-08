@@ -1,0 +1,37 @@
+name: Diagnose dictionary downloads
+
+# Requests the dictionary URLs listed in the app the same way DictionaryUtils.downloadDictionary does
+# (same User-Agent, manual redirects) and reports status, size and whether the body is a real .dict.
+on:
+  workflow_dispatch:
+    inputs:
+      locales:
+        description: "Locale prefixes from dictionaries_in_dict_repo.csv to test"
+        default: "en,et,de"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe URLs
+        run: |
+          BASE=$(grep -o 'DICTIONARY_URL = "[^"]*"' app/src/main/java/helium314/keyboard/latin/common/Constants.kt | cut -d'"' -f2)
+          SUFFIX=$(grep -o 'DICTIONARY_DOWNLOAD_SUFFIX = "[^"]*"' app/src/main/java/helium314/keyboard/latin/common/Constants.kt | cut -d'"' -f2)
+          UA=$(grep -o 'User-Agent", "[^"]*"' app/src/main/java/helium314/keyboard/latin/utils/DictionaryUtils.kt | head -1 | cut -d'"' -f3)
+          echo "base=$BASE suffix=$SUFFIX ua=$UA"
+          {
+            echo "| entry | URL | final status | bytes | content-type | .dict magic |"
+            echo "|---|---|---|---|---|---|"
+            for loc in $(echo "${{ inputs.locales }}" | tr ',' ' '); do
+              grep -E "^main,${loc}[,_]" app/src/main/assets/dictionaries_in_dict_repo.csv | while IFS=, read -r type locale kind path; do
+                case "$path" in http*) url="$path" ;; *) url="$BASE$SUFFIX$path" ;; esac
+                curl -sSL -A "$UA" -o body.bin -D headers.txt -w "%{http_code} %{size_download}\n" "$url" > res.txt 2> err.txt || true
+                read -r code size < res.txt
+                ctype=$(grep -i '^content-type' headers.txt | tail -1 | cut -d' ' -f2 | tr -d '\r')
+                magic=$(head -c 4 body.bin | od -An -tx1 | tr -d ' ')
+                ok=$([ "$magic" = "9bc13afe" ] && echo yes || echo "no ($magic: $(head -c 60 body.bin | tr -cd '[:print:]'))")
+                echo "| $type,$locale,$kind | $url | ${code:-error $(cat err.txt)} | $size | $ctype | $ok |"
+              done
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"

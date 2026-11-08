@@ -2519,4 +2519,6 @@ New dictionary:
     <!-- CJK Candidate Strip -->
     <string name="cjk_candidate_prev_page" tools:ignore="MissingTranslation">Previous candidates</string>
     <string name="cjk_candidate_next_page" tools:ignore="MissingTranslation">Next candidates</string>
+    <string name="available_dictionary_2026">"%s (2026, next-word prediction)"</string>
+    <string name="dictionary_download_failed_reason">Download failed: %s</string>
 </resources>

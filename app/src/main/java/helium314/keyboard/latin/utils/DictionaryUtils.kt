@@ -198,11 +198,14 @@ fun getKnownDictionariesForLocale(locale: Locale, context: Context): List<Pair<S
         }
         val rawDictString = "$typeDisplayName: ${dictLocale.localizedDisplayName(context.resources)}"
         val dictString = when (kind) {
+            "2026" -> context.getString(R.string.available_dictionary_2026, rawDictString)
             "exp" -> context.getString(R.string.available_dictionary_experimental, rawDictString)
             "legacy" -> "$rawDictString (legacy)"
             else -> rawDictString
         }
-        val dictLink = if (!relPath.isNullOrBlank()) {
+        val dictLink = if (!relPath.isNullOrBlank() && relPath.startsWith("https://")) {
+            relPath // dictionaries hosted outside the dictionaries repo, e.g. LeanType's own release assets
+        } else if (!relPath.isNullOrBlank()) {
             Links.DICTIONARY_URL + Links.DICTIONARY_DOWNLOAD_SUFFIX + relPath
         } else {
             val dictLinkSuffix = when (kind) {
@@ -254,6 +257,18 @@ private fun hasAnythingOtherThanExtractedMainDictionary(context: Context, dir: F
     return false
 }
 
+private val DICTIONARY_DOWNLOAD_USER_AGENT = "LeanType/${helium314.keyboard.latin.BuildConfig.VERSION_NAME} (Android; dictionary download)"
+
+/** Binary dictionaries (format v2 and later) start with this magic number. */
+private fun hasDictionaryMagic(file: File): Boolean = try {
+    file.inputStream().use { input ->
+        val b = ByteArray(4)
+        input.read(b) == 4 && b[0] == 0x9B.toByte() && b[1] == 0xC1.toByte() && b[2] == 0x3A.toByte() && b[3] == 0xFE.toByte()
+    }
+} catch (e: Exception) {
+    false
+}
+
 // ponytail: Dynamic dictionary downloader using HTTP URL connection with User-Agent, redirects, and timeouts.
 fun downloadDictionary(
     context: Context,
@@ -261,20 +276,22 @@ fun downloadDictionary(
     type: String,
     linkUrl: String,
     onProgress: ((Float) -> Unit)? = null,
-    onComplete: (Boolean) -> Unit
+    onComplete: (success: Boolean, error: String?) -> Unit
 ) {
-    val cacheDir = DictionaryInfoUtils.getCacheDirectoryForLocale(locale, context) ?: return onComplete(false)
+    val cacheDir = DictionaryInfoUtils.getCacheDirectoryForLocale(locale, context)
+        ?: return onComplete(false, "no dictionary directory for $locale")
     val targetFile = File(cacheDir, "${type}.dict")
     val tempFile = File(cacheDir, "${type}.dict.download")
     CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob()).launch {
         var success = false
+        var error: String? = null
         try {
             if (tempFile.exists()) {
                 tempFile.delete()
             }
             var url = java.net.URL(linkUrl)
             var connection = url.openConnection() as java.net.HttpURLConnection
-            connection.setRequestProperty("User-Agent", "HeliboardL/3.8.9 (Android)")
+            connection.setRequestProperty("User-Agent", DICTIONARY_DOWNLOAD_USER_AGENT)
             connection.connectTimeout = 15000
             connection.readTimeout = 15000
             connection.instanceFollowRedirects = true
@@ -289,7 +306,7 @@ fun downloadDictionary(
                 conn.disconnect()
                 val nextUrl = java.net.URL(newUrl)
                 conn = nextUrl.openConnection() as java.net.HttpURLConnection
-                conn.setRequestProperty("User-Agent", "HeliboardL/3.8.9 (Android)")
+                conn.setRequestProperty("User-Agent", DICTIONARY_DOWNLOAD_USER_AGENT)
                 conn.connectTimeout = 15000
                 conn.readTimeout = 15000
                 conn.instanceFollowRedirects = true
@@ -315,10 +332,11 @@ fun downloadDictionary(
                 }
                 val downloadedLength = tempFile.length()
                 if (expectedLength > 0 && downloadedLength != expectedLength) {
-                    Log.e("DictionaryUtils", "Downloaded size ($downloadedLength) does not match Content-Length ($expectedLength)")
+                    error = "incomplete download ($downloadedLength of $expectedLength bytes)"
                     tempFile.delete()
-                } else if (downloadedLength < 1024) {
-                    Log.e("DictionaryUtils", "Downloaded dictionary file is suspiciously small ($downloadedLength bytes)")
+                } else if (!hasDictionaryMagic(tempFile)) {
+                    // e.g. an HTML error/bot-check page or a Git LFS pointer; never install that as main.dict
+                    error = "server did not return a dictionary file (${conn.contentType ?: "unknown type"}, $downloadedLength bytes)"
                     tempFile.delete()
                 } else {
                     if (lastModified > 0L) {
@@ -330,22 +348,23 @@ fun downloadDictionary(
                     if (tempFile.renameTo(targetFile)) {
                         success = true
                     } else {
-                        Log.e("DictionaryUtils", "Failed to atomically rename temp dictionary to ${targetFile.name}")
+                        error = "could not save ${targetFile.name}"
                         tempFile.delete()
                     }
                 }
             } else {
-                Log.e("DictionaryUtils", "HTTP error downloading dictionary: $status")
+                error = "HTTP $status ${conn.responseMessage ?: ""}".trim() + " from ${conn.url.host}"
             }
             conn.disconnect()
         } catch (e: Exception) {
-            Log.e("DictionaryUtils", "Failed to download dictionary", e)
+            error = "${e.javaClass.simpleName}: ${e.message}"
             if (tempFile.exists()) {
                 tempFile.delete()
             }
         }
+        if (error != null) Log.e("DictionaryUtils", "Failed to download dictionary from $linkUrl: $error")
         withContext(Dispatchers.Main) {
-            onComplete(success)
+            onComplete(success, error)
         }
     }
 }
@@ -376,7 +395,7 @@ fun DownloadableDictionaryRow(locale: Locale, desc: String, link: String, refres
                     val url = java.net.URL(link)
                     val connection = url.openConnection() as java.net.HttpURLConnection
                     connection.requestMethod = "HEAD"
-                    connection.setRequestProperty("User-Agent", "HeliboardL/3.8.9 (Android)")
+                    connection.setRequestProperty("User-Agent", DICTIONARY_DOWNLOAD_USER_AGENT)
                     connection.connectTimeout = 5000
                     connection.readTimeout = 5000
                     connection.instanceFollowRedirects = true
@@ -391,7 +410,7 @@ fun DownloadableDictionaryRow(locale: Locale, desc: String, link: String, refres
                         val nextUrl = java.net.URL(newUrl)
                         conn = nextUrl.openConnection() as java.net.HttpURLConnection
                         conn.requestMethod = "HEAD"
-                        conn.setRequestProperty("User-Agent", "HeliboardL/3.8.9 (Android)")
+                        conn.setRequestProperty("User-Agent", DICTIONARY_DOWNLOAD_USER_AGENT)
                         conn.connectTimeout = 5000
                         conn.readTimeout = 5000
                         conn.instanceFollowRedirects = true
@@ -485,14 +504,14 @@ fun DownloadableDictionaryRow(locale: Locale, desc: String, link: String, refres
                         } else {
                             downloading = true
                             downloadProgress = 0f
-                            downloadDictionary(ctx, dictLocale, type, link, onProgress = { downloadProgress = it }) { success ->
+                            downloadDictionary(ctx, dictLocale, type, link, onProgress = { downloadProgress = it }) { success, error ->
                                 downloading = false
                                 if (success) {
                                     ctx.prefs().edit().putString("pref_dict_download_link_${type}_${dictLocale}", link).apply()
                                     ctx.sendBroadcast(Intent(DictionaryPackConstants.NEW_DICTIONARY_INTENT_ACTION))
                                     onRefresh()
                                 } else {
-                                    android.widget.Toast.makeText(ctx, ctx.getString(R.string.download_failed), android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(ctx, ctx.getString(R.string.dictionary_download_failed_reason, error ?: "?"), android.widget.Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
@@ -545,14 +564,14 @@ fun DownloadableDictionaryRow(locale: Locale, desc: String, link: String, refres
                     } else {
                         downloading = true
                         downloadProgress = 0f
-                        downloadDictionary(ctx, dictLocale, type, link, onProgress = { downloadProgress = it }) { success ->
+                        downloadDictionary(ctx, dictLocale, type, link, onProgress = { downloadProgress = it }) { success, error ->
                             downloading = false
                             if (success) {
                                 ctx.prefs().edit().putString("pref_dict_download_link_${type}_${dictLocale}", link).apply()
                                 ctx.sendBroadcast(Intent(DictionaryPackConstants.NEW_DICTIONARY_INTENT_ACTION))
                                 onRefresh()
                             } else {
-                                android.widget.Toast.makeText(ctx, ctx.getString(R.string.download_failed), android.widget.Toast.LENGTH_SHORT).show()
+                                android.widget.Toast.makeText(ctx, ctx.getString(R.string.dictionary_download_failed_reason, error ?: "?"), android.widget.Toast.LENGTH_LONG).show()
                             }
                         }
                     }

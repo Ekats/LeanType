@@ -1,0 +1,23 @@
+{
+  "header": {"id": "en_us", "locale": "en_US",
+             "description": "English (US) 2026 - LeanType: OpenSubtitles 2024 + Common Crawl 2026 + FineWeb 2025"},
+  "file_name": "main_en_us__2026.dict",
+  "opus_lang": "en",
+  "hunspell": ["en_US", "en_GB"],
+  "sources": [
+    {"name": "opensubtitles", "type": "opus", "share": 0.40, "max_tokens": 300000000},
+    {"name": "commoncrawl", "type": "ccwet", "share": 0.30, "max_tokens": 250000000,
+     "cc_languages": ["eng"], "max_files": 60},
+    {"name": "fineweb", "type": "hf_parquet", "share": 0.30, "max_tokens": 200000000,
+     "dataset": "HuggingFaceFW/fineweb", "path": "data", "newest_dumps": 3, "files_per_dump": 1, "max_files": 3}
+  ],
+  "vocab": {"max_words": 300000, "min_probability": 1e-8,
+            "unknown_word_min_probability": 1e-7, "unknown_word_min_sources": 2},
+  "bigrams": {"min_count": 5, "min_conditional_probability": 0.002, "max_per_word": 24, "min_per_word": 4},
+  "offensive_file": "../data/en_offensive.txt",
+  "extra_file": "../data/en_shortcuts.combined",
+  "probe": {
+    "predict": {"thank": "you", "I": "don't|think|have|am|was|know", "going<-am": "to", "want": "to", "how": "are|to|do|many|much"},
+    "correct": {"teh": "the", "becuase": "because", "recieve": "receive"}
+  }
+}
