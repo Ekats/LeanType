@@ -140,6 +140,9 @@ def source_weights(cfg, work):
     norm = sum(shares.values())
     total_tokens = sum(st["tokens"] for st in stats.values())
     weights = {n: (shares[n] / norm) * total_tokens / max(1, stats[n]["tokens"]) for n in stats}
+    # a source that came back much smaller than planned must not have its noise amplified
+    max_up = cfg.get("max_source_upweight", 3.0)
+    weights = {n: min(w, max_up) for n, w in weights.items()}
     return stats, weights
 
 

@@ -170,8 +170,21 @@ def fetch_opus(src, lang_code, w):
 def fetch_hf_parquet(src, w):
     import pyarrow.parquet as pq
     repo, path = src["dataset"], src["path"]
-    api = f"https://huggingface.co/api/datasets/{repo}/tree/main/{path}"
-    entries = http_json(api)
+    try:
+        if "{lang}" in path:
+            raise LookupError(path)
+        entries = http_json(f"https://huggingface.co/api/datasets/{repo}/tree/main/{path}")
+    except Exception:
+        # language folders use GlotLID codes (e.g. Estonian is ekk_Latn, not est_Latn): search for them
+        parent, _, rest = path.partition("/{lang}")
+        cands = src.get("lang_dirs", [])
+        listing = [e["path"] for e in http_json(f"https://huggingface.co/api/datasets/{repo}/tree/main/{parent}") if e["type"] == "directory"]
+        match = next((d for c in cands for d in listing if d.rsplit("/", 1)[-1] == c), None)
+        if not match:
+            raise RuntimeError(f"{path} not found in {repo}; candidates {cands}; available e.g. {listing[:20]}")
+        path = match + rest
+        log(f"[hf] using {path}")
+        entries = http_json(f"https://huggingface.co/api/datasets/{repo}/tree/main/{path}")
     dirs = sorted((e["path"] for e in entries if e["type"] == "directory"), reverse=True)
     if dirs and src.get("newest_dumps"):
         # e.g. FineWeb: data/CC-MAIN-YYYY-WW directories; take a little from each of the newest N dumps
