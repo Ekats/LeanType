@@ -202,6 +202,26 @@ def resolve_case(total, initial):
     return out
 
 
+def _edits1(w, alphabet):
+    splits = [(w[:i], w[i:]) for i in range(len(w) + 1)]
+    for a, b in splits:
+        if b:
+            yield a + b[1:]  # deletion
+            for c in alphabet:
+                if c != b[0]:
+                    yield a + c + b[1:]  # substitution
+        if len(b) > 1:
+            yield a + b[1] + b[0] + b[2:]  # transposition
+        for c in alphabet:
+            yield a + c + b  # insertion
+
+
+def _transpositions(w):
+    for i in range(len(w) - 1):
+        if w[i] != w[i + 1]:
+            yield w[:i] + w[i + 1] + w[i] + w[i + 2:]
+
+
 def prob_to_f(p):
     return 255.0 + 24.0 * math.log10(p) if p > 0 else 0.0
 
@@ -241,6 +261,27 @@ def cmd_vocab(cfg, work):
         n_sources = sum(1 for s in per_source_resolved.values() if f.lower() in s)
         if c / total_mass >= unknown_min_p and n_sources >= min(unknown_min_sources, len(per_source_resolved)):
             kept[f] = c
+    # common misspellings ("recieved", "Teh") are frequent on the web and unknown to Hunspell; drop unknown
+    # words that are one edit away from a known word that is far more frequent (they would block autocorrect)
+    ratio = v.get("misspelling_ratio", 50)
+    known_freq = {}
+    for f, c in kept.items():
+        if f in known or f.lower() in known_lower:
+            known_freq[f.lower()] = max(known_freq.get(f.lower(), 0.0), c)
+    alphabet = sorted({ch for f in known_freq for ch in f})
+    dropped = []
+    for f in [f for f in kept if not (f in known or f.lower() in known_lower)]:
+        low = f.lower()
+        if len(low) < 3 or low in known_freq:
+            continue
+        # names (Max, Mari) often sit one letter away from common words; for capitalised words only count
+        # transpositions, the typical typing slip ("Teh" vs "the")
+        edits = _transpositions(low) if f[:1].isupper() else _edits1(low, alphabet)
+        best = max((known_freq.get(e, 0.0) for e in edits), default=0.0)
+        if best >= ratio * kept[f]:
+            dropped.append(f)
+            del kept[f]
+    log(f"[vocab] dropped {len(dropped):,} likely misspellings, e.g. {dropped[:15]}")
     for w in cfg.get("always_include", []):
         kept.setdefault(w, max(kept.get(w, 0.0), total_mass * min_p))
     for w in cfg.get("exclude", []):
