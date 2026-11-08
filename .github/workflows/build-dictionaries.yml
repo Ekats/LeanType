@@ -19,13 +19,24 @@ permissions:
   contents: write
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      langs: ${{ steps.l.outputs.langs }}
+    steps:
+      - id: l
+        env:
+          LANGS: ${{ inputs.languages }}
+        run: echo "langs=$(python3 -c "import json,os;print(json.dumps([l.strip() for l in os.environ['LANGS'].split(',') if l.strip()]))")" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
       fail-fast: false
       matrix:
-        lang: ${{ fromJSON(format('["{0}"]', replace(replace(inputs.languages, ' ', ''), ',', '","'))) }}
+        lang: ${{ fromJSON(needs.setup.outputs.langs) }}
     env:
       WORK: ${{ github.workspace }}/work
       CFG: tools/dictbuild/lang/${{ matrix.lang }}.json
